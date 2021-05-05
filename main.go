@@ -63,6 +63,8 @@ func shutdown(sig chan os.Signal, s *http.Server, quit chan struct{}, hdone <-ch
 			fmt.Printf("Could not gracefully shutdown the server: %v\n", err)
 		}
 		defer func() {
+			// Wait 5 sec to close ws connection
+			// TODO find better
 			<-time.After(5 * time.Second)
 			fmt.Println("Canceling shutdown graceful. Force shutdown remaining conns")
 			cancel()

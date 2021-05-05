@@ -33,18 +33,18 @@ if (hangupButton) {
 }
 
 async function start() {
-    console.log("Requesting local stream");
-    startButton.disabled = true;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
-      console.log("Received local stream");
-      localVideo.srcObject = stream;
-      localStream = stream;
-      callButton.disabled = false;
-    } catch (e) {
-      alert(`getUserMedia() error: ${e.name}`);
-    }
+  console.log("Requesting local stream");
+  startButton.disabled = true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+    console.log("Received local stream");
+    localVideo.srcObject = stream;
+    localStream = stream;
+    callButton.disabled = false;
+  } catch (e) {
+    alert(`getUserMedia() error: ${e.name}`);
   }
+}
 
 async function call() {
   callButton.disabled = true;
@@ -61,21 +61,25 @@ async function call() {
 }
 
 function wsOnOpen (event) {
-    console.log("trying to connect to ws")
-    // Send request to connect to peers in room
-    // createPeerConnection();
-    console.log("sending join");
-    ws.send(JSON.stringify({Data: {join: true}}));
-  };
+  console.log("trying to connect to ws")
+  // Send request to connect to peers in room
+  // createPeerConnection();
+  console.log("sending join");
+  ws.send(JSON.stringify({Data: {join: true}}));
+};
 
 function wsOnClose (event) {
-    if (event.wasClean) {
-      console.log("ws conn closed clean.")
-    } else {
-      console.log("ws conn broken.", event);
-    }
-    console.log("code: " + event.code + " reason: " + event.reason);
-  };
+  if (event.wasClean) {
+    console.log("ws conn closed clean.")
+  } else {
+    console.log("ws conn broken.", event);
+  }
+  console.log("code: " + event.code + " reason: " + event.reason);
+  // close all rtp and remove videoboxes
+  cleanUpAll()
+  // close local mediastreams
+  localVideo.srcObject.getTracks().forEach(track => track.stop());
+}
 
 function wsOnMessage (event) {
   let msg = JSON.parse(event.data);
@@ -95,7 +99,11 @@ function wsOnMessage (event) {
   } else if (msg.Data.iceCandidate) {
     console.log("getting mssage icecandidate: ", msg.ClientID, msg.Data.iceCandidate);
     addIceCandidate(msg);
-  } else {
+  } else if (msg.Data.hangup) {
+    console.log("getting mssage hangup: ", msg.ClientID, msg.Data.hangup);
+    cleanUpID(msg.ClientID)
+  }
+   else {
     console.log("Unknown message type: ", msg);
   }
 };
@@ -307,6 +315,7 @@ function addVideoBox(clientid) {
 async function remVideoBox(id) {
   console.log("Removing video box", id);
   let remoteVideo = document.getElementById(id);
+  remoteVideo.srcObject.getTracks().forEach(track => track.stop());
   remoteVideo.parentElement.remove();
 }
 
@@ -322,22 +331,34 @@ async function cleanUp(peer) {
   if (peer != null) {
     peer.close();
     peer = null;
-    rtcPeers.delete(clientID);
   }
+  rtcPeers.delete(clientID);
+}
+
+async function cleanUpID(id) {
+  console.log("Cleanin up peer id: ", id);
+  remVideoBox(id);
+  let peer = rtcPeers.get(id)
+  if (peer != null) {
+    peer.close();
+    peer = null;
+  }
+  rtcPeers.delete(id);
 }
 
 function cleanUpAll() {
   for(let id of rtcPeers.keys()) {
     let peer = rtcPeers.get(id);
+    remVideoBox(id);
     peer.close();
     peer = null;
-    // remVideoBox(id);
     rtcPeers.delete(id);
   }
 }
 
 function hangup() {
   console.log("Ending call");
+  ws.send(JSON.stringify({Data: {hangup: true}}));
   cleanUpAll();
   if (ws != null) {
     ws.close(1000, "ending call");
@@ -347,7 +368,6 @@ function hangup() {
   window.location.replace(location.protocol+ "//" +location.host);
 }
 
-// TODO
 function randRoom() {
   let min = 1;
   let max = 100;
