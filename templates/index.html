@@ -9,12 +9,18 @@
   </head>
   <body>
     <div class="container">
-        <p>Please enter room name</p>
-        <form id="enter-room" action="/" method="post">
-          <input type="text" name="roomid" id="RoomId">
+      <form id="form-room" action="/" method="post">
+        <div>
+          <p>Enter your name:</p>
+          <input type="text" name="username" id="username">
+        </div>
+        <div>
+          <p>Enter room name:</p>
+          <input type="text" name="roomid" id="RoomId" value="1">
+        </div>
           <div class="btns">
             <input class="btn" type="submit" name="submit" value="join">
-            <input class="btn" type="submit" name="submit" value="random">
+            <input id="randButton" class="btn" type="button" name="submit" value="random">
           </div>
         </form>
     </div>
