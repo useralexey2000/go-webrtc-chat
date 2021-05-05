@@ -9,7 +9,7 @@
   </head>
   <body>
     <div class="container">
-      <p>Video chat</p>
+      <p>Video chat, room: {{ .RoomID }}</p>
       <div class="btns">
         <button id="startButton" class="btn">Start</button>
         <button id="callButton" class="btn">Call</button>
@@ -17,6 +17,7 @@
       </div>
       <div id="video-grid">
         <div class="video-box">
+          <p id="localName" class="clientName">{{ .ClientID }}</p>
           <video id="localVideo" playsinline autoplay muted></video>
         </div>
       </div>
