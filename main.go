@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -18,23 +22,58 @@ var (
 )
 
 func main() {
+	mux := http.NewServeMux()
+	httpServer := &http.Server{
+		Addr:    host + port,
+		Handler: mux,
+	}
 	hub := NewHub()
-	hub.Run()
+	quit := make(chan struct{})
+	hdone := hub.Run(quit)
+
 	// Sig chan to terminate prog.
-	// sigs := make(chan os.Signal, 1)
-	// signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	// go func() {
-	// 	sig := <-sigs
-	// 	fmt.Println(sig)
-	// 	close(done)
-	// 	os.Exit(0)
-	// }()
-	fmt.Printf("server started: %s%s\n", host, port)
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
-	http.HandleFunc("/", indexHandler(hub))
-	http.HandleFunc("/room", roomHandler)
-	http.HandleFunc("/ws", wsHandler(hub))
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	done := shutdown(sigs, httpServer, quit, hdone)
+
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	mux.HandleFunc("/", indexHandler(hub))
+	mux.HandleFunc("/room", roomHandler)
+	mux.HandleFunc("/ws", wsHandler(hub))
+
+	fmt.Printf("http server ready to start: %s%s\n", host, port)
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Could not listen on %s: %v\n", host+port, err)
+	}
+
+	<-done
+	fmt.Println("Exiting")
+}
+
+func shutdown(sig chan os.Signal, s *http.Server, quit chan struct{}, hdone <-chan struct{}) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		sigmsg := <-sig
+		fmt.Println("Received signal to quit: ", sigmsg)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		s.SetKeepAlivesEnabled(false)
+		// shutdown dosent wait ws connections
+		if err := s.Shutdown(ctx); err != nil {
+			// log.Fatalf("Could not gracefully shutdown the server: %v\n", err)
+			fmt.Printf("Could not gracefully shutdown the server: %v\n", err)
+		}
+		defer func() {
+			<-time.After(5 * time.Second)
+			fmt.Println("Canceling shutdown graceful. Force shutdown remaining conns")
+			cancel()
+			close(done)
+		}()
+		fmt.Println("Sending quit to hub to cleaup")
+		close(quit)
+		<-hdone
+		fmt.Println("Received done from hub")
+	}()
+	return done
 }
 
 // HUb .
@@ -54,19 +93,21 @@ func NewHub() *Hub {
 	}
 }
 
-func (h *Hub) Run() chan<- struct{} {
+func (h *Hub) Run(quit <-chan struct{}) <-chan struct{} {
+	fmt.Println("Hub started")
 	done := make(chan struct{})
 	go func() {
 		for {
 			select {
 			case c := <-h.Reg:
-				fmt.Println("user reg: ", c.ID, c.RoomID)
+				fmt.Println("client reg: ", c.ID, c.RoomID)
 				h.addClient(c)
 			case c := <-h.UnReg:
-				fmt.Println("user unreg: ", c.ID, c.RoomID)
+				fmt.Println("client unreg: ", c.ID, c.RoomID)
 				h.remClient(c)
 			case msg := <-h.Broadcast:
-				fmt.Println("received msg: ", msg.ClientID, msg.RoomID, msg.To, msg.Data)
+				// TODO change msg.Data to struct key:val
+				fmt.Println("received msg: ", msg.ClientID, msg.RoomID, msg.To, mapKey(msg.Data))
 				// if to is not epecified broadcast to all except itself
 				if msg.To == "" {
 					for _, c := range h.Rooms[msg.RoomID] {
@@ -83,13 +124,16 @@ func (h *Hub) Run() chan<- struct{} {
 						}
 					}
 				}
-			case <-done:
-				fmt.Println("quiting server")
+			case <-quit:
+				fmt.Println("quiting hub server")
 				for _, r := range h.Rooms {
 					for _, c := range r {
-						c.Conn.Close()
+						close(c.Ch)
+						// c.Conn.Close()
 					}
 				}
+				fmt.Println("All client's channels are closed, returning")
+				close(done)
 				return
 			}
 		}
@@ -98,13 +142,16 @@ func (h *Hub) Run() chan<- struct{} {
 }
 
 func (h *Hub) addClient(c *Client) {
+	fmt.Println("Adding client: ", c.ID)
 	h.Rooms[c.RoomID] = append(h.Rooms[c.RoomID], c)
 }
 
 func (h *Hub) remClient(c *Client) {
+	fmt.Println("Removing client: ", c.ID)
 	for i, cl := range h.Rooms[c.RoomID] {
 		if c == cl {
-			c.Conn.Close()
+			// c.Conn.Close()
+			close(c.Ch)
 			h.Rooms[c.RoomID] = append(h.Rooms[c.RoomID][:i], h.Rooms[c.RoomID][i+1:]...)
 		}
 	}
@@ -121,10 +168,11 @@ type Client struct {
 }
 
 func (c *Client) Read() {
+	defer c.Conn.Close()
 	for {
 		var msg Message
 		if err := c.Conn.ReadJSON(&msg); err != nil {
-			fmt.Println("cant read from conn ", err)
+			fmt.Printf("cant read from conn %s, error: %v\n", c.ID, err)
 			c.Hb.UnReg <- c
 			return
 		}
@@ -135,8 +183,18 @@ func (c *Client) Read() {
 
 }
 func (c *Client) Write() {
+	defer func() {
+		fmt.Println("Closing connection of client ", c.ID)
+		c.Conn.Close()
+	}()
 	for {
-		msg := <-c.Ch
+		msg, ok := <-c.Ch
+		// Channel is closed
+		if !ok {
+			fmt.Printf("Channel of client %s is closed, sending close connection message\n", c.ID)
+			c.Conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(1001, "server shutdown"))
+			break
+		}
 		if err := c.Conn.WriteJSON(msg); err != nil {
 			fmt.Println("cant write to con: ", err)
 			c.Hb.UnReg <- c
@@ -159,7 +217,7 @@ func indexHandler(h *Hub) http.HandlerFunc {
 		if r.Method == "GET" {
 			err := tmpl.ExecuteTemplate(w, "index.html", nil)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Println("cant execute template ", err)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -171,6 +229,7 @@ func indexHandler(h *Hub) http.HandlerFunc {
 				return
 			}
 			uname := r.FormValue("username")
+			// Give client random name if not specified
 			if uname == "" {
 				uname = fmt.Sprint(
 					rand.New(rand.NewSource(time.Now().UnixNano())).Int())
@@ -189,7 +248,7 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 	roomID := r.FormValue("id")
 	err := tmpl.ExecuteTemplate(w, "room.html", Message{ClientID: clientID, RoomID: roomID})
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("cant execute template ", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -207,7 +266,7 @@ func wsHandler(h *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		roomID := r.FormValue("roomid")
 		ID := r.FormValue("username")
-		fmt.Println("username and roomid: ", ID, roomID)
+		fmt.Println("client username and roomid: ", ID, roomID)
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			fmt.Println("cant upgrade conn: ", err)
@@ -226,4 +285,11 @@ func wsHandler(h *Hub) http.HandlerFunc {
 		go client.Read()
 		go client.Write()
 	}
+}
+
+func mapKey(m map[string]interface{}) string {
+	for k := range m {
+		return k
+	}
+	return ""
 }
