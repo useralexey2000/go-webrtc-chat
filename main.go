@@ -66,10 +66,21 @@ func (h *Hub) Run() chan<- struct{} {
 				fmt.Println("user unreg: ", c.ID, c.RoomID)
 				h.remClient(c)
 			case msg := <-h.Broadcast:
-				fmt.Println("received msg: ", msg.ClientID, msg.RoomID, msg.Data)
-				for _, c := range h.Rooms[msg.RoomID] {
-					if c.ID != msg.ClientID {
-						c.Ch <- msg
+				fmt.Println("received msg: ", msg.ClientID, msg.RoomID, msg.To, msg.Data)
+				// if to is not epecified broadcast to all except itself
+				if msg.To == "" {
+					for _, c := range h.Rooms[msg.RoomID] {
+						if c.ID != msg.ClientID {
+							c.Ch <- msg
+						}
+					}
+				} else {
+					// send to specific user
+					for _, c := range h.Rooms[msg.RoomID] {
+						if c.ID == msg.To {
+							c.Ch <- msg
+							break
+						}
 					}
 				}
 			case <-done:
@@ -112,7 +123,7 @@ type Client struct {
 func (c *Client) Read() {
 	for {
 		var msg Message
-		if err := c.Conn.ReadJSON(&msg.Data); err != nil {
+		if err := c.Conn.ReadJSON(&msg); err != nil {
 			fmt.Println("cant read from conn ", err)
 			c.Hb.UnReg <- c
 			return
@@ -137,8 +148,10 @@ func (c *Client) Write() {
 // Message .
 type Message struct {
 	ClientID string
-	RoomID   string
-	Data     map[string]interface{}
+	// Message addressed to specific client ID
+	To     string
+	RoomID string
+	Data   map[string]interface{}
 }
 
 func indexHandler(h *Hub) http.HandlerFunc {
@@ -157,16 +170,14 @@ func indexHandler(h *Hub) http.HandlerFunc {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			s := r.FormValue("submit")
-			var roomID string
-			if s == "join" {
-				roomID = r.FormValue("roomid")
-			} else {
-				r := rand.New(rand.NewSource(time.Now().UnixNano()))
-				roomID = fmt.Sprint(r.Int())
+			uname := r.FormValue("username")
+			if uname == "" {
+				uname = fmt.Sprint(
+					rand.New(rand.NewSource(time.Now().UnixNano())).Int())
 			}
-			fmt.Println(roomID)
-			http.Redirect(w, r, "/room?id="+roomID, http.StatusFound)
+			roomID := r.FormValue("roomid")
+			fmt.Println("Client requested room: ", roomID, uname)
+			http.Redirect(w, r, "/room?id="+roomID+"&username="+uname, http.StatusFound)
 			return
 		}
 		http.Error(w, "Unimplemented method", http.StatusNotImplemented)
@@ -174,7 +185,9 @@ func indexHandler(h *Hub) http.HandlerFunc {
 }
 
 func roomHandler(w http.ResponseWriter, r *http.Request) {
-	err := tmpl.ExecuteTemplate(w, "room.html", nil)
+	clientID := r.FormValue("username")
+	roomID := r.FormValue("id")
+	err := tmpl.ExecuteTemplate(w, "room.html", Message{ClientID: clientID, RoomID: roomID})
 	if err != nil {
 		fmt.Println(err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -193,15 +206,16 @@ var upgrader = websocket.Upgrader{
 func wsHandler(h *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		roomID := r.FormValue("roomid")
+		ID := r.FormValue("username")
+		fmt.Println("username and roomid: ", ID, roomID)
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			fmt.Println("cant upgrade conn: ", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		ID := rand.New(rand.NewSource(time.Now().UnixNano())).Int()
 		client := &Client{
-			ID:     fmt.Sprint(ID),
+			ID:     ID,
 			RoomID: roomID,
 			Ch:     make(chan Message),
 			Hb:     h,
