@@ -16,6 +16,11 @@ body {
     margin: 0.1em;
 }
 
+.clientName {
+    text-align: center;
+    color:grey;
+}
+
 video {
     width: 100%;
     height: 100%;
@@ -23,12 +28,12 @@ video {
     background: #222;
 }
 
-#enter-room {
+#form-room {
     display: flex;
     flex-direction: column;
 }
 
-#enter-room > input[type="text"] {
+#form-room input[type="text"] {
     background-color: transparent;
     border: none;
     border-bottom: solid 1px #4c4c4f;
@@ -36,6 +41,7 @@ video {
     font-size: 1em;
     padding: .4em 0;
     margin-bottom: 1em;
+    width: 100%;
 }
 
 .btns {
@@ -55,4 +61,8 @@ video {
 
 .btn:disabled {
     background-color: #64A7FF;
+}
+
+#btn-random {
+
 }
