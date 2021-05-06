@@ -7,16 +7,21 @@ const startButton = document.getElementById("startButton");
 const callButton = document.getElementById("callButton");
 const hangupButton = document.getElementById("hangupButton");
 
+// websocket connection
 let ws;
+// local media
 let localStream;
-
+// rtc remote connections 
 let rtcPeers = new Map();
+//Specify iceServers to work not only in local network, auth and other opthions of
+// rtc connection
+//const rtcConfig = {'iceServers': [{'urls': 'stun:stun.l.google.com:19302'}]}
+const rtcConfig = [];    
 
 const offerOptions = {
   offerToReceiveAudio: 1,
   offerToReceiveVideo: 1
 };
-
 
 if (randButton) {randButton.addEventListener("click", randRoom);}
 if (startButton) {
@@ -63,7 +68,6 @@ async function call() {
 function wsOnOpen (event) {
   console.log("trying to connect to ws")
   // Send request to connect to peers in room
-  // createPeerConnection();
   console.log("sending join");
   ws.send(JSON.stringify({Data: {join: true}}));
 };
@@ -99,6 +103,7 @@ function wsOnMessage (event) {
   } else if (msg.Data.iceCandidate) {
     console.log("getting mssage icecandidate: ", msg.ClientID, msg.Data.iceCandidate);
     addIceCandidate(msg);
+  // Hangup EVENT
   } else if (msg.Data.hangup) {
     console.log("getting mssage hangup: ", msg.ClientID, msg.Data.hangup);
     cleanUpID(msg.ClientID)
@@ -121,8 +126,7 @@ function createPeerConnection() {
   if (audioTracks.length > 0) {
     console.log(`Using audio device: ${audioTracks[0].label}`);
   }
-  const servers = [];
-  let rtcPeer = new RTCPeerConnection(servers);
+  let rtcPeer = new RTCPeerConnection(rtcConfig);
   
   console.log("Created local peer connection object rtcPeer");
   rtcPeer.onicecandidate = onIceCandidate;
